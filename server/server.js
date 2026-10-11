@@ -5,24 +5,51 @@ import cors from "cors";
 import Groq from "groq-sdk";
 import { readFileSync } from "node:fs";
 
+const app = express();
+const PORT = process.env.PORT || 5000;
+
 // Load persona.md from the same folder as server.js
 const personaData = readFileSync(
   new URL("./persona.md", import.meta.url),
   "utf8"
 );
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+// Allowed frontend origins
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://simmi-ai-eosin.vercel.app",
+];
 
-app.use(cors({ origin: "http://localhost:5173" }));
+// CORS configuration
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow requests without an Origin header (e.g. server-side tools)
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Also allow Vercel preview deployments
+      if (/^https:\/\/simmi-ai(?:-[a-z0-9-]+)?\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked origin: ${origin}`));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
 app.use(express.json({ limit: "1mb" }));
 
+// Groq configuration
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-const MODEL =
-  process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
 
 // System prompt for Simmi
 const systemPrompt = (mode = "Personal") => `
@@ -62,7 +89,7 @@ read aloud.
 // Chat endpoint
 app.post("/api/chat", async (req, res) => {
   try {
-    const { messages, mode } = req.body;
+    const { messages, mode } = req.body ?? {};
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({
@@ -70,7 +97,6 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // Keep only valid user and assistant messages
     const history = messages
       .filter(
         (message) =>
@@ -106,8 +132,7 @@ app.post("/api/chat", async (req, res) => {
       ],
     });
 
-    const reply =
-      completion.choices[0]?.message?.content?.trim();
+    const reply = completion.choices[0]?.message?.content?.trim();
 
     return res.json({
       reply: reply || "Arey bhai, say that again for me? 💗",
@@ -121,10 +146,10 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
- // Fish Audio text-to-speech endpoint
+// Fish Audio text-to-speech endpoint
 app.post("/api/tts", async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text } = req.body ?? {};
 
     if (typeof text !== "string" || !text.trim()) {
       return res.status(400).json({
@@ -141,22 +166,19 @@ app.post("/api/tts", async (req, res) => {
       });
     }
 
-    const response = await fetch(
-      "https://api.fish.audio/v1/tts",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          model: "s2.1-pro-free",
-        },
-        body: JSON.stringify({
-          text: text.trim().slice(0, 4000),
-          reference_id: voiceId,
-          format: "mp3",
-        }),
-      }
-    );
+    const response = await fetch("https://api.fish.audio/v1/tts", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        model: "s2.1-pro-free",
+      },
+      body: JSON.stringify({
+        text: text.trim().slice(0, 4000),
+        reference_id: voiceId,
+        format: "mp3",
+      }),
+    });
 
     if (!response.ok) {
       const details = await response.text();
@@ -172,9 +194,7 @@ app.post("/api/tts", async (req, res) => {
       });
     }
 
-    const audio = Buffer.from(
-      await response.arrayBuffer()
-    );
+    const audio = Buffer.from(await response.arrayBuffer());
 
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Cache-Control", "no-store");
@@ -189,7 +209,6 @@ app.post("/api/tts", async (req, res) => {
   }
 });
 
-
 // Health-check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
@@ -198,6 +217,15 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Simmi server running at http://localhost:${PORT}`);
+// Root endpoint for quick browser testing
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "Simmi AI",
+    health: "/api/health",
+  });
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Simmi server listening on port ${PORT}`);
 });
