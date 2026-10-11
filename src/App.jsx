@@ -1,6 +1,25 @@
-import { useEffect, useRef, useState } from "react";
-import { Send, Mic, MicOff, Headphones, PhoneOff, Plus, Menu, X, ChevronsLeft, Copy, Check, Trash2, MessageSquare, UserRound, BriefcaseBusiness, BookOpen, Coffee } from "lucide-react";
 
+import { useEffect, useRef, useState } from "react";
+import {
+  Send,
+  Mic,
+  MicOff,
+  Headphones,
+  PhoneOff,
+  Plus,
+  Menu,
+  X,
+  Copy,
+  Check,
+  Trash2,
+  MessageSquare,
+  UserRound,
+  BriefcaseBusiness,
+  BookOpen,
+  Coffee,
+} from "lucide-react";
+
+const API_URL = "http://localhost:5000";
 
 const PERSONA = {
   name: "Simmi",
@@ -63,8 +82,8 @@ const modes = [
   },
 ];
 
-
-const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const uid = () =>
+  `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const formatTime = (timestamp) =>
   new Date(timestamp).toLocaleTimeString([], {
@@ -79,67 +98,60 @@ const createChat = () => ({
   messages: [],
 });
 
-// UI-only placeholder. Replace the body with your real API call later.
 async function fetchReply(messages, mode) {
-  try {
-    const res = await fetch("http://localhost:5000/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, mode }),
-    });
-    if (!res.ok) throw new Error("bad response");
-    const data = await res.json();
-    return data.reply;
-  } catch {
-    return "Sorry, I couldn't reach my brain right now. Try again in a moment 💗";
+  const response = await fetch(`${API_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, mode }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || "Could not generate a response");
   }
+
+  return data.reply;
 }
 
-function placeholderReply() {
-  return "I'm here with you 💗 Tell me a little more, and let's figure it out together.";
-}
-
-// Browser speech APIs (Chrome, Edge and Safari support recognition; Firefox does not).
 const SpeechRecognitionAPI =
   typeof window !== "undefined"
     ? window.SpeechRecognition || window.webkitSpeechRecognition
     : undefined;
+
 const recognitionSupported = Boolean(SpeechRecognitionAPI);
-const synthesisSupported =
-  typeof window !== "undefined" && "speechSynthesis" in window;
-
-function pickVoice() {
-  if (!synthesisSupported) return undefined;
-  const voices = window.speechSynthesis.getVoices();
-  const english = voices.filter((voice) => voice.lang.startsWith("en"));
-  return (
-    english.find((voice) =>
-      /female|samantha|zira|heera|veena|aria|jenny|karen|moira|tessa/i.test(
-        voice.name
-      )
-    ) || english[0]
-  );
-}
-
-function recognitionErrorMessage(code) {
-  if (code === "not-allowed" || code === "service-not-allowed") {
-    return "Microphone access is blocked. Allow it in your browser's site settings.";
-  }
-  if (code === "audio-capture") {
-    return "No microphone was found on this device.";
-  }
-  if (code === "network") {
-    return "Voice input needs an internet connection.";
-  }
-  return `Voice input stopped (${code}).`;
-}
-
-/* ----------------------------------- app ---------------------------------- */
 
 export default function App() {
-  const [initialChat] = useState(createChat);
-  const [chats, setChats] = useState([initialChat]);
-  const [activeId, setActiveId] = useState(initialChat.id);
+  const [initialState] = useState(() => {
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem("simmi-chats-v1")
+      );
+
+      if (
+        saved &&
+        Array.isArray(saved.chats) &&
+        saved.chats.length > 0
+      ) {
+        return {
+          chats: saved.chats,
+          activeId: saved.chats.some(
+            (chat) => chat.id === saved.activeId
+          )
+            ? saved.activeId
+            : saved.chats[0].id,
+        };
+      }
+    } catch (error) {
+      console.error("Could not load chat history:", error);
+    }
+
+    const chat = createChat();
+    return { chats: [chat], activeId: chat.id };
+  });
+
+  const [chats, setChats] = useState(initialState.chats);
+  const [activeId, setActiveId] = useState(initialState.activeId);
   const [draft, setDraft] = useState("");
   const [listening, setListening] = useState(false);
   const [typingIds, setTypingIds] = useState([]);
@@ -147,9 +159,8 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
 
-  // voice chat
   const [voiceOpen, setVoiceOpen] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState("idle"); // idle | listening | thinking | speaking
+  const [voiceStatus, setVoiceStatus] = useState("idle");
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [liveText, setLiveText] = useState("");
   const [voiceError, setVoiceError] = useState("");
@@ -163,57 +174,85 @@ export default function App() {
   const draftRef = useRef("");
   const sendRef = useRef(null);
 
+  const audioRef = useRef(null);
+  const audioUrlRef = useRef(null);
+  const speakingRequestRef = useRef(0);
+
   draftRef.current = draft;
 
-  const active = chats.find((chat) => chat.id === activeId) || chats[0];
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "simmi-chats-v1",
+        JSON.stringify({ chats, activeId })
+      );
+    } catch (error) {
+      console.error("Could not save chat history:", error);
+    }
+  }, [chats, activeId]);
+
+  const active =
+    chats.find((chat) => chat.id === activeId) || chats[0];
+
   const typing = typingIds.includes(active.id);
-  const activeMode = modes.find((item) => item.name === active.mode) || null;
+
+  const activeMode =
+    modes.find((item) => item.name === active.mode) || null;
+
   const isEmpty = active.messages.length === 0;
+
   const prompts = activeMode
     ? activeMode.questions
     : modes.map((item) => item.questions[0]);
+
   const lastReply = [...active.messages]
     .reverse()
     .find((message) => message.role === "assistant")?.text;
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    bottomRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
   }, [active.id, active.messages.length, typing]);
 
   useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+    const element = textareaRef.current;
+    if (!element) return;
+
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 140)}px`;
   }, [draft]);
 
   useEffect(() => {
     if (!voiceOpen) return undefined;
+
     const onKey = (event) => {
       if (event.key === "Escape") closeVoice();
     };
+
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [voiceOpen]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    return () => {
       stopRecognition();
-      if (synthesisSupported) window.speechSynthesis.cancel();
-    },
-    []
-  );
-
-  /* ------------------------------ chat actions ----------------------------- */
+      stopSpeaking();
+    };
+  }, []);
 
   function patchChat(chatId, updater) {
     setChats((previous) =>
-      previous.map((chat) => (chat.id === chatId ? updater(chat) : chat))
+      previous.map((chat) =>
+        chat.id === chatId ? updater(chat) : chat
+      )
     );
   }
 
   function newChat() {
     const chat = createChat();
+
     setChats((previous) => [chat, ...previous]);
     setActiveId(chat.id);
     setDraft("");
@@ -231,7 +270,9 @@ export default function App() {
   }
 
   function deleteChat(chatId) {
-    const remaining = chats.filter((chat) => chat.id !== chatId);
+    const remaining = chats.filter(
+      (chat) => chat.id !== chatId
+    );
 
     if (remaining.length === 0) {
       const fresh = createChat();
@@ -241,7 +282,10 @@ export default function App() {
     }
 
     setChats(remaining);
-    if (chatId === activeId) setActiveId(remaining[0].id);
+
+    if (chatId === activeId) {
+      setActiveId(remaining[0].id);
+    }
   }
 
   function selectMode(name) {
@@ -251,48 +295,99 @@ export default function App() {
     }));
   }
 
-  // Returns true when a message was actually sent.
-  function send(text = draft, options = {}) {
+  async function send(text = draft, options = {}) {
     const value = text.trim();
-    if (!value || typing) return false;
+    const chatId = active.id;
+
+    if (!value || typingIds.includes(chatId)) return false;
 
     if (!options.voice) {
       stopRecognition();
       setListening(false);
     }
 
-    const chatId = active.id;
     const modeName = active.mode || "Casual";
+
+    const userMessage = {
+      id: uid(),
+      role: "user",
+      text: value,
+      at: Date.now(),
+    };
+
+    const history = [
+      ...active.messages,
+      userMessage,
+    ].slice(-20);
 
     patchChat(chatId, (chat) => ({
       ...chat,
       mode: modeName,
-      title: chat.messages.length === 0 ? value.slice(0, 36) : chat.title,
-      messages: [
-        ...chat.messages,
-        { id: uid(), role: "user", text: value, at: Date.now() },
-      ],
+      title:
+        chat.messages.length === 0
+          ? value.slice(0, 36)
+          : chat.title,
+      messages: [...chat.messages, userMessage],
     }));
 
     setDraft("");
-    setTypingIds((previous) => [...previous, chatId]);
-
-        const chatHistory = [...active.messages, { role: "user", text: value }].map(
-      (item) => ({ role: item.role, content: item.text })
+    setTypingIds((previous) =>
+      previous.includes(chatId)
+        ? previous
+        : [...previous, chatId]
     );
 
-    fetchReply(chatHistory, modeName).then((replyText) => {
+    try {
+      const chatHistory = history.map((message) => ({
+        role: message.role,
+        content: message.text,
+      }));
+
+      const replyText = await fetchReply(chatHistory, modeName);
+
       patchChat(chatId, (chat) => ({
         ...chat,
         messages: [
           ...chat.messages,
-          { id: uid(), role: "assistant", text: replyText, at: Date.now() },
+          {
+            id: uid(),
+            role: "assistant",
+            text: replyText,
+            at: Date.now(),
+          },
         ],
       }));
-      setTypingIds((previous) => previous.filter((id) => id !== chatId));
 
-      if (options.voice) speak(replyText);
-    });
+      if (options.voice && voiceOpenRef.current) {
+        await speak(replyText);
+      }
+    } catch (error) {
+      console.error("Chat request failed:", error);
+
+      const errorText =
+        "Sorry, I couldn't reach my brain right now. Try again in a moment 💗";
+
+      patchChat(chatId, (chat) => ({
+        ...chat,
+        messages: [
+          ...chat.messages,
+          {
+            id: uid(),
+            role: "assistant",
+            text: errorText,
+            at: Date.now(),
+          },
+        ],
+      }));
+
+      if (options.voice && voiceOpenRef.current) {
+        await speak(errorText);
+      }
+    } finally {
+      setTypingIds((previous) =>
+        previous.filter((id) => id !== chatId)
+      );
+    }
 
     return true;
   }
@@ -304,8 +399,8 @@ export default function App() {
       await navigator.clipboard.writeText(message.text);
       setCopiedId(message.id);
       setTimeout(() => setCopiedId(null), 1500);
-    } catch {
-      /* clipboard unavailable — ignore */
+    } catch (error) {
+      console.error("Clipboard unavailable:", error);
     }
   }
 
@@ -320,70 +415,107 @@ export default function App() {
     }
   }
 
-  /* ------------------------------- voice logic ------------------------------ */
-
   function stopRecognition() {
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    rec.onstart = null;
-    rec.onresult = null;
-    rec.onerror = null;
-    rec.onend = null;
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+
+    recognition.onstart = null;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+
     try {
-      rec.abort();
+      recognition.abort();
     } catch {
-      /* already stopped */
+      // Recognition may already have stopped.
     }
+
     recognitionRef.current = null;
   }
 
-  // target: "dictate" fills the text box, "voice" drives the voice chat screen.
   function startRecognition(target) {
     if (!recognitionSupported) {
       setVoiceError(
-        "Voice input isn't supported in this browser. Try Chrome, Edge or Safari."
+        "Voice input isn't supported in this browser. Try Chrome or Edge."
       );
       return;
     }
 
+    if (mutedRef.current && target === "voice") return;
+
     stopRecognition();
     setVoiceError("");
 
-    const rec = new SpeechRecognitionAPI();
-    rec.lang = navigator.language || "en-US";
-    rec.interimResults = true;
-    rec.continuous = false;
+    const recognition = new SpeechRecognitionAPI();
+    recognition.lang = navigator.language || "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = false;
 
     const baseDraft = draftRef.current.trim();
     let finalText = "";
 
-    rec.onstart = () => {
-      if (target === "voice") setVoiceStatus("listening");
-      else setListening(true);
+    recognition.onstart = () => {
+      if (target === "voice") {
+        setVoiceStatus("listening");
+      } else {
+        setListening(true);
+      }
     };
 
-    rec.onresult = (event) => {
+    recognition.onresult = (event) => {
       let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        if (result.isFinal) finalText += result[0].transcript;
-        else interim += result[0].transcript;
+
+      for (
+        let index = event.resultIndex;
+        index < event.results.length;
+        index += 1
+      ) {
+        const result = event.results[index];
+
+        if (result.isFinal) {
+          finalText += result[0].transcript;
+        } else {
+          interim += result[0].transcript;
+        }
       }
+
       const spoken = `${finalText}${interim}`.trim();
 
-      if (target === "voice") setLiveText(spoken);
-      else setDraft(`${baseDraft} ${spoken}`.trim());
+      if (target === "voice") {
+        setLiveText(spoken);
+      } else {
+        setDraft(`${baseDraft} ${spoken}`.trim());
+      }
     };
 
-    rec.onerror = (event) => {
-      if (event.error === "no-speech" || event.error === "aborted") return;
+    recognition.onerror = (event) => {
+      if (
+        event.error === "no-speech" ||
+        event.error === "aborted"
+      ) {
+        return;
+      }
+
       fatalRef.current = true;
-      setVoiceError(recognitionErrorMessage(event.error));
-      if (target === "voice") setVoiceStatus("idle");
-      else setListening(false);
+
+      if (event.error === "not-allowed") {
+        setVoiceError(
+          "Microphone access is blocked. Allow it in your browser settings."
+        );
+      } else if (event.error === "audio-capture") {
+        setVoiceError("No microphone was found on this device.");
+      } else {
+        setVoiceError(`Voice input stopped (${event.error}).`);
+      }
+
+      if (target === "voice") {
+        setVoiceStatus("idle");
+      } else {
+        setListening(false);
+      }
     };
 
-    rec.onend = () => {
+    recognition.onend = () => {
       recognitionRef.current = null;
 
       if (target === "dictate") {
@@ -393,33 +525,40 @@ export default function App() {
 
       if (!voiceOpenRef.current) return;
 
-      const text = finalText.trim();
+      const spokenText = finalText.trim();
       setLiveText("");
 
-      if (text) {
+      if (spokenText) {
         setVoiceStatus("thinking");
-        const sent = sendRef.current(text, { voice: true });
+
+        const sent = sendRef.current(spokenText, {
+          voice: true,
+        });
+
         if (!sent) resumeListening();
       } else {
         resumeListening();
       }
     };
 
-    recognitionRef.current = rec;
+    recognitionRef.current = recognition;
 
     try {
-      rec.start();
-    } catch {
+      recognition.start();
+    } catch (error) {
       recognitionRef.current = null;
+      console.error("Could not start recognition:", error);
     }
   }
 
   function resumeListening() {
     if (!voiceOpenRef.current) return;
+
     setVoiceStatus("idle");
+
     if (mutedRef.current || fatalRef.current) return;
 
-    setTimeout(() => {
+    window.setTimeout(() => {
       if (
         voiceOpenRef.current &&
         !mutedRef.current &&
@@ -428,16 +567,30 @@ export default function App() {
       ) {
         startRecognition("voice");
       }
-    }, 300);
+    }, 400);
   }
 
-  function speak(text) {
-    if (!voiceOpenRef.current) return;
+  function stopSpeaking() {
+    speakingRequestRef.current += 1;
 
-    if (!synthesisSupported) {
-      resumeListening();
-      return;
+    const audio = audioRef.current;
+
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.src = "";
+      audioRef.current = null;
     }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  }
+
+  async function speak(text) {
+    if (!voiceOpenRef.current) return;
 
     const clean = text
       .replace(/\p{Extended_Pictographic}|\uFE0F/gu, "")
@@ -449,19 +602,78 @@ export default function App() {
       return;
     }
 
-    window.speechSynthesis.cancel();
+    stopRecognition();
+    stopSpeaking();
 
-    const utterance = new SpeechSynthesisUtterance(clean);
-    const voice = pickVoice();
-    if (voice) utterance.voice = voice;
-    utterance.pitch = 1.1;
-    utterance.rate = 1;
+    const requestId = speakingRequestRef.current;
 
-    utterance.onstart = () => setVoiceStatus("speaking");
-    utterance.onend = () => resumeListening();
-    utterance.onerror = () => resumeListening();
+    try {
+      setVoiceStatus("thinking");
 
-    window.speechSynthesis.speak(utterance);
+      const response = await fetch(`${API_URL}/api/tts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text: clean }),
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(
+          `Fish Audio TTS failed (${response.status}): ${details}`
+        );
+      }
+
+      const blob = await response.blob();
+
+      if (
+        !voiceOpenRef.current ||
+        requestId !== speakingRequestRef.current
+      ) {
+        return;
+      }
+
+      const audioUrl = URL.createObjectURL(blob);
+      audioUrlRef.current = audioUrl;
+
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onplay = () => {
+        setVoiceStatus("speaking");
+      };
+
+      audio.onended = () => {
+        if (audioRef.current === audio) {
+          stopSpeaking();
+          resumeListening();
+        }
+      };
+
+      audio.onerror = () => {
+        if (audioRef.current === audio) {
+          stopSpeaking();
+          setVoiceError("Couldn't play Simmi's voice. Please try again.");
+          resumeListening();
+        }
+      };
+
+      await audio.play();
+    } catch (error) {
+      console.error("Fish Audio playback error:", error);
+
+      if (requestId === speakingRequestRef.current) {
+        stopSpeaking();
+
+        if (voiceOpenRef.current) {
+          setVoiceError(
+            "Couldn't generate Simmi's voice. Check the Fish Audio API settings."
+          );
+          resumeListening();
+        }
+      }
+    }
   }
 
   function toggleDictation() {
@@ -470,12 +682,15 @@ export default function App() {
       setListening(false);
       return;
     }
+
     fatalRef.current = false;
     startRecognition("dictate");
   }
 
   function openVoice() {
     stopRecognition();
+    stopSpeaking();
+
     setListening(false);
     setDraft("");
 
@@ -494,8 +709,9 @@ export default function App() {
 
   function closeVoice() {
     voiceOpenRef.current = false;
+
     stopRecognition();
-    if (synthesisSupported) window.speechSynthesis.cancel();
+    stopSpeaking();
 
     setVoiceOpen(false);
     setVoiceStatus("idle");
@@ -507,17 +723,25 @@ export default function App() {
 
   function toggleMute() {
     const next = !voiceMuted;
+
     setVoiceMuted(next);
     mutedRef.current = next;
 
     if (next) {
       stopRecognition();
       setLiveText("");
-      setVoiceStatus((status) => (status === "listening" ? "idle" : status));
+
+      setVoiceStatus((status) =>
+        status === "listening" ? "idle" : status
+      );
+
       return;
     }
 
-    if (voiceStatus !== "speaking" && voiceStatus !== "thinking") {
+    if (
+      voiceStatus !== "speaking" &&
+      voiceStatus !== "thinking"
+    ) {
       fatalRef.current = false;
       setVoiceError("");
       startRecognition("voice");
@@ -527,21 +751,20 @@ export default function App() {
   const voiceLabel = voiceError
     ? voiceError
     : voiceMuted
-    ? "Mic is off. Tap the mic to talk."
-    : voiceStatus === "listening"
-    ? liveText || "Listening..."
-    : voiceStatus === "thinking"
-    ? "Thinking..."
-    : voiceStatus === "speaking"
-    ? `${PERSONA.name} is speaking...`
-    : "Getting ready...";
+      ? "Mic is off. Tap the mic to talk."
+      : voiceStatus === "listening"
+        ? liveText || "Listening..."
+        : voiceStatus === "thinking"
+          ? "Thinking..."
+          : voiceStatus === "speaking"
+            ? `${PERSONA.name} is speaking...`
+            : "Getting ready...";
 
   const voiceActive =
     !voiceError &&
     !voiceMuted &&
-    (voiceStatus === "listening" || voiceStatus === "speaking");
-
-  /* --------------------------------- render --------------------------------- */
+    (voiceStatus === "listening" ||
+      voiceStatus === "speaking");
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-[#fffafb] text-slate-800">
@@ -550,23 +773,28 @@ export default function App() {
           0%, 100% { transform: translateY(0); }
           50% { transform: translateY(-6px); }
         }
+
         @keyframes simmi-breathe {
           0%, 100% { transform: scale(1); }
           50% { transform: scale(1.06); }
         }
+
         @keyframes simmi-rise {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }
         }
+
         .simmi-float { animation: simmi-float 5s ease-in-out infinite; }
         .simmi-breathe { animation: simmi-breathe 1.4s ease-in-out infinite; }
         .simmi-rise { animation: simmi-rise 0.25s ease-out both; }
+
         @media (prefers-reduced-motion: reduce) {
-          .simmi-float, .simmi-breathe, .simmi-rise { animation: none; }
+          .simmi-float, .simmi-breathe, .simmi-rise {
+            animation: none;
+          }
         }
       `}</style>
 
-      {/* mobile overlay */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-30 bg-slate-900/30 md:hidden"
@@ -575,7 +803,6 @@ export default function App() {
         />
       )}
 
-      {/* sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col border-r border-pink-100 bg-white transition-transform duration-200 md:static md:translate-x-0 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
@@ -588,6 +815,7 @@ export default function App() {
               {PERSONA.name}
             </span>
           </div>
+
           <button
             onClick={() => setSidebarOpen(false)}
             aria-label="Close sidebar"
@@ -595,13 +823,14 @@ export default function App() {
           >
             <X size={18} />
           </button>
+
           <button
             onClick={() => setCollapsed(true)}
             aria-label="Collapse chat history"
             title="Collapse chat history"
             className="hidden rounded-lg p-2 text-slate-400 hover:bg-pink-50 hover:text-pink-600 md:block"
           >
-            <ChevronsLeft size={18} />
+            <X size={18} />
           </button>
         </div>
 
@@ -635,7 +864,9 @@ export default function App() {
               >
                 <MessageSquare size={15} className="shrink-0 opacity-60" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm">{chat.title}</span>
+                  <span className="block truncate text-sm">
+                    {chat.title}
+                  </span>
                   {chat.mode && (
                     <span className="block text-[11px] text-slate-400">
                       {chat.mode}
@@ -643,10 +874,11 @@ export default function App() {
                   )}
                 </span>
               </button>
+
               <button
                 onClick={() => deleteChat(chat.id)}
                 aria-label={`Delete chat: ${chat.title}`}
-                className="mr-1 rounded-lg p-2 text-slate-300 hover:bg-white hover:text-rose-500 md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100"
+                className="mr-1 rounded-lg p-2 text-slate-300 hover:bg-white hover:text-rose-500 md:opacity-0 md:group-hover:opacity-100"
               >
                 <Trash2 size={14} />
               </button>
@@ -659,9 +891,7 @@ export default function App() {
         </div>
       </aside>
 
-      {/* main column */}
       <main className="flex min-w-0 flex-1 flex-col">
-        {/* header */}
         <header className="flex shrink-0 items-center gap-3 border-b border-pink-100 bg-white/80 px-4 py-3 backdrop-blur">
           <button
             onClick={() => {
@@ -669,7 +899,6 @@ export default function App() {
               setCollapsed(false);
             }}
             aria-label="Open chat history"
-            title="Open chat history"
             className={`rounded-lg p-2 text-slate-500 hover:bg-pink-50 hover:text-pink-600 ${
               collapsed ? "" : "md:hidden"
             }`}
@@ -688,8 +917,8 @@ export default function App() {
               {typing
                 ? "Typing..."
                 : activeMode
-                ? `Online, ${activeMode.name} mode`
-                : "Online"}
+                  ? `Online, ${activeMode.name} mode`
+                  : "Online"}
             </p>
           </div>
 
@@ -710,7 +939,6 @@ export default function App() {
           </button>
         </header>
 
-        {/* conversation area */}
         <section className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           {isEmpty ? (
             <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center py-4">
@@ -721,9 +949,10 @@ export default function App() {
               <h2 className="mt-5 text-center text-3xl font-semibold tracking-tight sm:text-4xl">
                 Hey, I'm <span className="text-pink-500">{PERSONA.name}.</span>
               </h2>
+
               <p className="mt-2 max-w-md text-center text-sm leading-6 text-slate-500 sm:text-base">
-                {PERSONA.owner}'s personal companion for learning, growing, and
-                everyday life. 💗
+                {PERSONA.owner}'s personal companion for learning, growing,
+                and everyday life. 💗
               </p>
 
               <p className="mb-3 mt-8 text-center text-xs font-medium text-slate-400">
@@ -746,9 +975,7 @@ export default function App() {
                           : "bg-white ring-slate-100"
                       }`}
                     >
-                      <span
-                        className={`flex h-9 w-9 items-center justify-center rounded-xl ${item.tint}`}
-                      >
+                      <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${item.tint}`}>
                         <Icon size={19} />
                       </span>
                       <span className="text-sm font-semibold">{item.name}</span>
@@ -810,11 +1037,12 @@ export default function App() {
 
                       <div className="mt-1 flex items-center gap-2 px-1 text-[11px] text-slate-400">
                         <span>{formatTime(message.at)}</span>
+
                         {!isUser && (
                           <button
                             onClick={() => copyMessage(message)}
                             aria-label="Copy message"
-                            className="flex items-center gap-1 rounded-md p-1 hover:bg-pink-50 hover:text-pink-600 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                            className="flex items-center gap-1 rounded-md p-1 hover:bg-pink-50 hover:text-pink-600 sm:opacity-0 sm:group-hover:opacity-100"
                           >
                             {copiedId === message.id ? (
                               <>
@@ -852,7 +1080,6 @@ export default function App() {
           )}
         </section>
 
-        {/* composer */}
         <footer className="shrink-0 border-t border-pink-100 bg-white/80 px-4 pb-4 pt-3 backdrop-blur sm:px-8">
           <div className="mx-auto w-full max-w-3xl">
             {!isEmpty && (
@@ -906,21 +1133,13 @@ export default function App() {
                 aria-label={listening ? "Stop dictation" : "Dictate a message"}
                 title={listening ? "Stop dictation" : "Dictate a message"}
                 aria-pressed={listening}
-                className={`flex h-11 min-w-11 shrink-0 items-center justify-center gap-1 rounded-xl px-3 transition ${
+                className={`flex h-11 min-w-11 shrink-0 items-center justify-center rounded-xl px-3 transition ${
                   listening
                     ? "bg-pink-100 text-pink-600"
                     : "bg-rose-50 text-rose-500 hover:bg-rose-100"
                 }`}
               >
-                {listening ? (
-                  <>
-                    <span className="h-2 w-1.5 animate-bounce rounded-full bg-pink-500" />
-                    <span className="h-4 w-1.5 animate-bounce rounded-full bg-pink-500 [animation-delay:150ms]" />
-                    <span className="h-2 w-1.5 animate-bounce rounded-full bg-pink-500 [animation-delay:300ms]" />
-                  </>
-                ) : (
-                  <Mic size={19} />
-                )}
+                <Mic size={19} />
               </button>
 
               <button
@@ -948,7 +1167,6 @@ export default function App() {
         </footer>
       </main>
 
-      {/* voice chat screen */}
       {voiceOpen && (
         <div
           role="dialog"
@@ -960,6 +1178,7 @@ export default function App() {
             <span className="text-sm font-medium text-slate-500">
               Voice chat with {PERSONA.name}
             </span>
+
             <button
               onClick={closeVoice}
               aria-label="Close voice chat"
@@ -977,9 +1196,12 @@ export default function App() {
                   <span className="absolute -inset-4 animate-ping rounded-full bg-pink-200/30 [animation-delay:400ms] motion-reduce:animate-none" />
                 </>
               )}
+
               <div
                 className={`relative ${
-                  voiceStatus === "speaking" ? "simmi-breathe" : "simmi-float"
+                  voiceStatus === "speaking"
+                    ? "simmi-breathe"
+                    : "simmi-float"
                 }`}
               >
                 <Orb size={160} glow />
@@ -1008,7 +1230,9 @@ export default function App() {
               <button
                 onClick={toggleMute}
                 aria-pressed={voiceMuted}
-                aria-label={voiceMuted ? "Turn microphone on" : "Turn microphone off"}
+                aria-label={
+                  voiceMuted ? "Turn microphone on" : "Turn microphone off"
+                }
                 className={`flex h-14 w-14 items-center justify-center rounded-full shadow-sm ring-1 transition ${
                   voiceMuted
                     ? "bg-slate-800 text-white ring-slate-800"
@@ -1039,8 +1263,6 @@ export default function App() {
   );
 }
 
-/* ------------------------------- components ------------------------------- */
-
 function Orb({ size = 40, glow = false }) {
   return (
     <div
@@ -1051,6 +1273,7 @@ function Orb({ size = 40, glow = false }) {
       {glow && (
         <div className="absolute inset-0 rounded-full bg-pink-300/40 blur-2xl" />
       )}
+
       <div className="relative h-full w-full overflow-hidden rounded-full bg-gradient-to-br from-pink-200 via-rose-300 to-fuchsia-300 shadow-[0_0_20px_rgba(244,114,182,0.25)]">
         <div className="absolute left-[18%] top-[14%] h-[30%] w-[30%] rounded-full bg-white/70 blur-[3px]" />
         <div className="absolute bottom-[15%] right-[16%] h-[36%] w-[36%] rounded-full bg-rose-100/50 blur-[4px]" />

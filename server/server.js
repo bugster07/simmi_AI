@@ -121,7 +121,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ElevenLabs text-to-speech endpoint
+ // Fish Audio text-to-speech endpoint
 app.post("/api/tts", async (req, res) => {
   try {
     const { text } = req.body;
@@ -132,27 +132,28 @@ app.post("/api/tts", async (req, res) => {
       });
     }
 
-    const apiKey = process.env.ELEVENLABS_API_KEY;
-    const voiceId = process.env.ELEVENLABS_VOICE_ID;
+    const apiKey = process.env.FISH_API_KEY;
+    const voiceId = process.env.FISH_VOICE_ID;
 
     if (!apiKey || !voiceId) {
       return res.status(500).json({
-        error: "ElevenLabs API key or voice ID is missing",
+        error: "Fish Audio API key or voice ID is missing",
       });
     }
 
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      "https://api.fish.audio/v1/tts",
       {
         method: "POST",
         headers: {
-          "xi-api-key": apiKey,
+          Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          Accept: "audio/mpeg",
+          model: "s2.1-pro-free",
         },
         body: JSON.stringify({
           text: text.trim().slice(0, 4000),
-          model_id: "eleven_multilingual_v2",
+          reference_id: voiceId,
+          format: "mp3",
         }),
       }
     );
@@ -161,13 +162,13 @@ app.post("/api/tts", async (req, res) => {
       const details = await response.text();
 
       console.error(
-        "ElevenLabs error:",
+        "Fish Audio error:",
         response.status,
         details
       );
 
       return res.status(502).json({
-        error: "Speech generation failed",
+        error: "Fish Audio speech generation failed",
       });
     }
 
@@ -180,13 +181,14 @@ app.post("/api/tts", async (req, res) => {
 
     return res.send(audio);
   } catch (error) {
-    console.error("TTS error:", error.message);
+    console.error("Fish Audio TTS error:", error.message);
 
     return res.status(500).json({
       error: "Could not generate speech",
     });
   }
 });
+
 
 // Health-check endpoint
 app.get("/api/health", (req, res) => {
